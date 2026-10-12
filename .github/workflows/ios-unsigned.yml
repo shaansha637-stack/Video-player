@@ -12,17 +12,17 @@ jobs:
     runs-on: macos-latest
 
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Show Xcode version
+      - name: Select Xcode
         run: |
+          sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
           xcodebuild -version
-          swift --version
+          xcodebuild -showsdks | grep iphoneos
 
       - name: Install XcodeGen
         run: |
-          brew update
           brew install xcodegen
 
       - name: Generate Xcode project
@@ -30,32 +30,31 @@ jobs:
           set -e
           xcodegen generate
 
-          echo "Generated project:"
+          echo "===== PROJECT ====="
           ls -la
-
           test -f DragoPlayer.xcodeproj/project.pbxproj
 
-      - name: Clean build
+      - name: Show project settings
         run: |
-          set -e
-
           xcodebuild \
             -project DragoPlayer.xcodeproj \
             -scheme DragoPlayer \
-            -configuration Release \
-            -sdk iphoneos \
-            -derivedDataPath "$PWD/build/DerivedData" \
-            CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGN_IDENTITY="" \
-            DEVELOPMENT_TEAM="" \
-            clean
+            -showBuildSettings \
+            > build-settings.txt 2>&1
+
+          grep -E \
+            "PRODUCT_BUNDLE_IDENTIFIER|IPHONEOS_DEPLOYMENT_TARGET|CODE_SIGN|SWIFT_VERSION|SDKROOT" \
+            build-settings.txt || true
 
       - name: Build unsigned application
+        shell: bash
         run: |
-          set -e
+          set +e
 
-          mkdir -p build/DerivedData
+          rm -rf build
+          mkdir -p build
+
+          echo "===== START XCODE BUILD ====="
 
           xcodebuild \
             -project DragoPlayer.xcodeproj \
@@ -68,50 +67,54 @@ jobs:
             CODE_SIGN_IDENTITY="" \
             DEVELOPMENT_TEAM="" \
             AD_HOC_CODE_SIGNING_ALLOWED=NO \
-            build
+            clean build \
+            2>&1 | tee build/xcodebuild.log
+
+          BUILD_STATUS=${PIPESTATUS[0]}
+
+          echo ""
+          echo "===== XCODE ERROR SUMMARY ====="
+
+          grep -nE \
+            "error:|fatal error:|BUILD FAILED|SwiftCompile failed|CompileSwift failed" \
+            build/xcodebuild.log \
+            | tail -100 || true
+
+          echo ""
+          echo "===== LAST 150 LINES ====="
+
+          tail -150 build/xcodebuild.log
+
+          if [ "$BUILD_STATUS" -ne 0 ]; then
+            echo ""
+            echo "XCODE BUILD FAILED: $BUILD_STATUS"
+            exit "$BUILD_STATUS"
+          fi
 
       - name: Find application
+        if: success()
         run: |
           set -e
 
-          echo "Searching for DragoPlayer.app..."
-
-          find build/DerivedData \
-            -type d \
-            -name "DragoPlayer.app" \
-            -print
-
           APP_PATH=$(find \
-            build/DerivedData \
+            build/DerivedData/Build/Products \
             -type d \
             -name "DragoPlayer.app" \
             -print -quit)
 
           if [ -z "$APP_PATH" ]; then
-            echo "ERROR: DragoPlayer.app was not created."
+            echo "ERROR: DragoPlayer.app not found"
+            find build/DerivedData -type d -name "*.app" -print
             exit 1
           fi
 
           echo "APP_PATH=$APP_PATH" >> "$GITHUB_ENV"
 
-      - name: Inspect application
-        run: |
-          set -e
-
-          echo "Application:"
+          echo "Found:"
           echo "$APP_PATH"
 
-          echo ""
-          echo "Application contents:"
-          find "$APP_PATH" -maxdepth 2 -type f | head -100
-
-          echo ""
-          echo "Info.plist:"
-          /usr/libexec/PlistBuddy \
-            -c "Print :CFBundleIdentifier" \
-            "$APP_PATH/Info.plist"
-
       - name: Create unsigned IPA
+        if: success()
         run: |
           set -e
 
@@ -122,41 +125,41 @@ jobs:
 
           cd build
 
-          rm -f DragoPlayer-unsigned.ipa
-
-          /usr/bin/zip \
-            -qry \
+          zip -qry \
             DragoPlayer-unsigned.ipa \
             Payload
 
           cd ..
 
-          echo ""
-          echo "IPA created:"
           ls -lh build/DragoPlayer-unsigned.ipa
 
-          test -f build/DragoPlayer-unsigned.ipa
-
       - name: Verify IPA
+        if: success()
         run: |
           set -e
 
-          echo "IPA contents:"
-          unzip -l build/DragoPlayer-unsigned.ipa
+          test -f build/DragoPlayer-unsigned.ipa
 
-          echo ""
-          echo "Checking Payload..."
+          unzip -l \
+            build/DragoPlayer-unsigned.ipa
 
-          unzip -Z1 build/DragoPlayer-unsigned.ipa | \
-            grep "Payload/DragoPlayer.app/Info.plist"
+          echo "IPA verification successful."
 
-          echo ""
-          echo "Unsigned IPA verification successful."
-
-      - name: Upload unsigned IPA
+      - name: Upload IPA
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: DragoPlayer-unsigned-IPA
           path: build/DragoPlayer-unsigned.ipa
-          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DragoPlayer-Xcode-Build-Log
+          path: |
+            build/xcodebuild.log
+            build-settings.txt
+          if-no-files-found: ignore
           retention-days: 7

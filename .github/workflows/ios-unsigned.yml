@@ -1,4 +1,4 @@
-name: Build DragoPlayer Unsigned IPA
+name: Build DragoPlayer Unsigned iOS IPA
 
 on:
   workflow_dispatch:
@@ -7,165 +7,156 @@ permissions:
   contents: read
 
 jobs:
-
   build:
-
     name: Build unsigned iOS IPA
     runs-on: macos-latest
 
     steps:
-
-      # --------------------------------------------------
-      # Checkout repository
-      # --------------------------------------------------
-
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
-
-
-      # --------------------------------------------------
-      # Show Xcode version
-      # --------------------------------------------------
 
       - name: Show Xcode version
         run: |
           xcodebuild -version
-          xcode-select -p
-
-
-      # --------------------------------------------------
-      # Install XcodeGen
-      # --------------------------------------------------
+          swift --version
 
       - name: Install XcodeGen
         run: |
           brew update
           brew install xcodegen
 
-
-      # --------------------------------------------------
-      # Generate Xcode project
-      # --------------------------------------------------
-
       - name: Generate Xcode project
         run: |
+          set -e
           xcodegen generate
 
+          echo "Generated project:"
+          ls -la
 
-      # --------------------------------------------------
-      # Clean build
-      # --------------------------------------------------
+          test -f DragoPlayer.xcodeproj/project.pbxproj
 
-      - name: Clean project
+      - name: Clean build
         run: |
-          xcodebuild \
-            -project DragoPlayer.xcodeproj \
-            -scheme DragoPlayer \
-            -configuration Release \
-            -sdk iphoneos \
-            clean
-
-
-      # --------------------------------------------------
-      # Build unsigned archive
-      # --------------------------------------------------
-
-      - name: Archive unsigned app
-        run: |
-          mkdir -p build
+          set -e
 
           xcodebuild \
             -project DragoPlayer.xcodeproj \
             -scheme DragoPlayer \
             -configuration Release \
             -sdk iphoneos \
-            -archivePath "$PWD/build/DragoPlayer.xcarchive" \
+            -derivedDataPath "$PWD/build/DerivedData" \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
             DEVELOPMENT_TEAM="" \
-            archive
+            clean
 
-
-      # --------------------------------------------------
-      # Locate application
-      # --------------------------------------------------
-
-      - name: Locate application
+      - name: Build unsigned application
         run: |
-          find build/DragoPlayer.xcarchive \
-            -name "*.app" \
-            -maxdepth 5 \
-            -print
-
-
-      # --------------------------------------------------
-      # Create unsigned IPA
-      # --------------------------------------------------
-
-      - name: Package unsigned IPA
-        run: |
-
           set -e
 
+          mkdir -p build/DerivedData
+
+          xcodebuild \
+            -project DragoPlayer.xcodeproj \
+            -scheme DragoPlayer \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath "$PWD/build/DerivedData" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            DEVELOPMENT_TEAM="" \
+            AD_HOC_CODE_SIGNING_ALLOWED=NO \
+            build
+
+      - name: Find application
+        run: |
+          set -e
+
+          echo "Searching for DragoPlayer.app..."
+
+          find build/DerivedData \
+            -type d \
+            -name "DragoPlayer.app" \
+            -print
+
           APP_PATH=$(find \
-            build/DragoPlayer.xcarchive/Products/Applications \
-            -maxdepth 1 \
-            -name "*.app" \
+            build/DerivedData \
+            -type d \
+            -name "DragoPlayer.app" \
             -print -quit)
 
           if [ -z "$APP_PATH" ]; then
-            echo "ERROR: Application not found"
+            echo "ERROR: DragoPlayer.app was not created."
             exit 1
           fi
+
+          echo "APP_PATH=$APP_PATH" >> "$GITHUB_ENV"
+
+      - name: Inspect application
+        run: |
+          set -e
 
           echo "Application:"
           echo "$APP_PATH"
 
+          echo ""
+          echo "Application contents:"
+          find "$APP_PATH" -maxdepth 2 -type f | head -100
+
+          echo ""
+          echo "Info.plist:"
+          /usr/libexec/PlistBuddy \
+            -c "Print :CFBundleIdentifier" \
+            "$APP_PATH/Info.plist"
+
+      - name: Create unsigned IPA
+        run: |
+          set -e
+
+          rm -rf build/Payload
           mkdir -p build/Payload
 
-          cp -R "$APP_PATH" build/Payload/
+          cp -R "$APP_PATH" build/Payload/DragoPlayer.app
 
           cd build
 
-          zip -qry \
+          rm -f DragoPlayer-unsigned.ipa
+
+          /usr/bin/zip \
+            -qry \
             DragoPlayer-unsigned.ipa \
             Payload
 
           cd ..
 
+          echo ""
           echo "IPA created:"
           ls -lh build/DragoPlayer-unsigned.ipa
 
-
-      # --------------------------------------------------
-      # Verify IPA
-      # --------------------------------------------------
+          test -f build/DragoPlayer-unsigned.ipa
 
       - name: Verify IPA
         run: |
-
           set -e
 
-          test -f build/DragoPlayer-unsigned.ipa
-
-          unzip -l \
-            build/DragoPlayer-unsigned.ipa
+          echo "IPA contents:"
+          unzip -l build/DragoPlayer-unsigned.ipa
 
           echo ""
-          echo "Unsigned IPA successfully created."
+          echo "Checking Payload..."
 
+          unzip -Z1 build/DragoPlayer-unsigned.ipa | \
+            grep "Payload/DragoPlayer.app/Info.plist"
 
-      # --------------------------------------------------
-      # Upload IPA
-      # --------------------------------------------------
+          echo ""
+          echo "Unsigned IPA verification successful."
 
       - name: Upload unsigned IPA
         uses: actions/upload-artifact@v4
-
         with:
           name: DragoPlayer-unsigned-IPA
           path: build/DragoPlayer-unsigned.ipa
           if-no-files-found: error
-
           retention-days: 7

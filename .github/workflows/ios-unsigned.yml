@@ -1,0 +1,171 @@
+name: Build DragoPlayer Unsigned IPA
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+
+  build:
+
+    name: Build unsigned iOS IPA
+    runs-on: macos-latest
+
+    steps:
+
+      # --------------------------------------------------
+      # Checkout repository
+      # --------------------------------------------------
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+
+      # --------------------------------------------------
+      # Show Xcode version
+      # --------------------------------------------------
+
+      - name: Show Xcode version
+        run: |
+          xcodebuild -version
+          xcode-select -p
+
+
+      # --------------------------------------------------
+      # Install XcodeGen
+      # --------------------------------------------------
+
+      - name: Install XcodeGen
+        run: |
+          brew update
+          brew install xcodegen
+
+
+      # --------------------------------------------------
+      # Generate Xcode project
+      # --------------------------------------------------
+
+      - name: Generate Xcode project
+        run: |
+          xcodegen generate
+
+
+      # --------------------------------------------------
+      # Clean build
+      # --------------------------------------------------
+
+      - name: Clean project
+        run: |
+          xcodebuild \
+            -project DragoPlayer.xcodeproj \
+            -scheme DragoPlayer \
+            -configuration Release \
+            -sdk iphoneos \
+            clean
+
+
+      # --------------------------------------------------
+      # Build unsigned archive
+      # --------------------------------------------------
+
+      - name: Archive unsigned app
+        run: |
+          mkdir -p build
+
+          xcodebuild \
+            -project DragoPlayer.xcodeproj \
+            -scheme DragoPlayer \
+            -configuration Release \
+            -sdk iphoneos \
+            -archivePath "$PWD/build/DragoPlayer.xcarchive" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            DEVELOPMENT_TEAM="" \
+            archive
+
+
+      # --------------------------------------------------
+      # Locate application
+      # --------------------------------------------------
+
+      - name: Locate application
+        run: |
+          find build/DragoPlayer.xcarchive \
+            -name "*.app" \
+            -maxdepth 5 \
+            -print
+
+
+      # --------------------------------------------------
+      # Create unsigned IPA
+      # --------------------------------------------------
+
+      - name: Package unsigned IPA
+        run: |
+
+          set -e
+
+          APP_PATH=$(find \
+            build/DragoPlayer.xcarchive/Products/Applications \
+            -maxdepth 1 \
+            -name "*.app" \
+            -print -quit)
+
+          if [ -z "$APP_PATH" ]; then
+            echo "ERROR: Application not found"
+            exit 1
+          fi
+
+          echo "Application:"
+          echo "$APP_PATH"
+
+          mkdir -p build/Payload
+
+          cp -R "$APP_PATH" build/Payload/
+
+          cd build
+
+          zip -qry \
+            DragoPlayer-unsigned.ipa \
+            Payload
+
+          cd ..
+
+          echo "IPA created:"
+          ls -lh build/DragoPlayer-unsigned.ipa
+
+
+      # --------------------------------------------------
+      # Verify IPA
+      # --------------------------------------------------
+
+      - name: Verify IPA
+        run: |
+
+          set -e
+
+          test -f build/DragoPlayer-unsigned.ipa
+
+          unzip -l \
+            build/DragoPlayer-unsigned.ipa
+
+          echo ""
+          echo "Unsigned IPA successfully created."
+
+
+      # --------------------------------------------------
+      # Upload IPA
+      # --------------------------------------------------
+
+      - name: Upload unsigned IPA
+        uses: actions/upload-artifact@v4
+
+        with:
+          name: DragoPlayer-unsigned-IPA
+          path: build/DragoPlayer-unsigned.ipa
+          if-no-files-found: error
+
+          retention-days: 7
